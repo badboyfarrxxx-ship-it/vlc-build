@@ -4,7 +4,7 @@ Builds VLC 4 for Windows as a portable zip, on GitHub's servers.
 
 ## Build
 
-Actions tab > "Build VLC for Windows" > Run workflow. About an hour.
+Actions tab > "Build VLC for Windows" > Run workflow. About 25 minutes.
 When it finishes, the zip is on the Releases page.
 
 ## Install on the Surface
