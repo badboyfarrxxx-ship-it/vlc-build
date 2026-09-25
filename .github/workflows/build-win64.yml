@@ -9,6 +9,8 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Unit tests
         run: tests/run-all.sh
@@ -29,7 +31,7 @@ jobs:
         run: |
           git init -q vlc
           git -C vlc remote add origin https://github.com/videolan/vlc.git
-          git -C vlc fetch -q --depth 1 origin "${{ steps.pin.outputs.sha }}"
+          git -C vlc fetch -q --depth 1000 origin "${{ steps.pin.outputs.sha }}"
           git -C vlc checkout -q FETCH_HEAD
 
       - name: Apply patches
@@ -41,11 +43,26 @@ jobs:
           name="$(scripts/read-image.sh vlc/extras/ci/gitlab-ci.yml)"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
+      - name: Find VLC's ready-made libraries
+        id: contribs
+        run: |
+          sha="$(cd vlc && extras/ci/get-contrib-sha.sh win64)"
+          url="https://artifacts.videolan.org/vlc/win64/vlc-contrib-x86_64-w64-mingw32-${sha}.tar.zst"
+          if ! curl -fsIL "$url" >/dev/null; then
+            echo "::error::VLC has no ready-made libraries for this commit ($url). Pick a newer commit for VLC_COMMIT." >&2
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
       - name: Build inside VLC's image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          CONTRIBS_URL: ${{ steps.contribs.outputs.url }}
         run: |
           docker run --rm --user root \
             -v "$PWD/vlc:/vlc" -v "$PWD/scripts:/scripts:ro" -w /vlc \
-            "${{ steps.image.outputs.name }}" /scripts/container-build.sh
+            -e VLC_PREBUILT_CONTRIBS_URL="$CONTRIBS_URL" \
+            "$IMAGE" /scripts/container-build.sh
 
       - name: Check the zip
         id: zip
@@ -60,8 +77,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ steps.pin.outputs.short }}-run${{ github.run_number }}" \
+          gh release create "build-${{ steps.pin.outputs.short }}-run${{ github.run_number }}-a${{ github.run_attempt }}" \
             "${{ steps.zip.outputs.file }}" \
             --prerelease \
-            --title "VLC 4 build ${{ steps.pin.outputs.short }} (run ${{ github.run_number }})" \
+            --target "${{ github.sha }}" \
+            --title "VLC 4 build ${{ steps.pin.outputs.short }} (run ${{ github.run_number }}-a${{ github.run_attempt }})" \
             --notes "VLC commit ${{ steps.pin.outputs.sha }}. Unzip and run vlc.exe."
