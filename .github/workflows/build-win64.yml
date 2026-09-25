@@ -37,7 +37,9 @@ jobs:
 
       - name: Pick VLC's build image
         id: image
-        run: echo "name=$(scripts/read-image.sh vlc/extras/ci/gitlab-ci.yml)" >> "$GITHUB_OUTPUT"
+        run: |
+          name="$(scripts/read-image.sh vlc/extras/ci/gitlab-ci.yml)"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - name: Build inside VLC's image
         run: |
