@@ -16,6 +16,15 @@ When it finishes, the zip is on the Releases page.
 
 It doesn't touch a normal VLC install or your file types.
 
+### If nothing happens when you start it
+
+Old VLC settings can point VLC at the skins interface, which quits straight away with no window.
+Paste this into PowerShell to move the old settings aside (nothing is deleted), then start VLC again:
+
+    Rename-Item "$env:APPDATA\vlc" "vlc-old-$(Get-Date -Format yyyyMMdd-HHmm)"
+
+Also make sure you extracted the zip first. Running `vlc.exe` from inside the zip view doesn't work.
+
 ## Upgrade VLC
 
 Put a newer commit hash from https://github.com/videolan/vlc/commits/master in `VLC_COMMIT`,
