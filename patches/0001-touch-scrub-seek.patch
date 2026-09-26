@@ -1,0 +1,224 @@
+diff --git a/modules/gui/qt/player/qml/Player.qml b/modules/gui/qt/player/qml/Player.qml
+index 46691e7..64ae1d3 100644
+--- a/modules/gui/qt/player/qml/Player.qml
++++ b/modules/gui/qt/player/qml/Player.qml
+@@ -216,37 +216,142 @@ FocusScope {
+ 
+             property WheelToVLCConverter wheelToVLCConverter
+ 
++            // Sideways drags scrub through the media (seek on release, with a
++            // time bubble while dragging); up/down drags keep the wheel behavior.
++            property Item seekBubble: null
++
++            // 0: axis not decided yet, 1: horizontal (scrub), 2: vertical (wheel)
++            property int dragMode: 0
++
++            // Seconds covered by a drag across the full width of the handler's item.
++            property real fullSwipeSeconds: 300
++
++            property real scrubStartPosition: 0
++            property real scrubTargetPosition: 0
++            property bool scrubCanceled: false
++
++            function scrubOffsetSeconds(dx) {
++                const w = Math.max(1, touchDragHandler.parent ? touchDragHandler.parent.width : 1)
++                const f = Math.min(1, Math.abs(dx) / w)
++                // Quadratic curve: short drags make fine moves, long drags cover a lot.
++                return Math.sign(dx) * fullSwipeSeconds * f * f
++            }
++
++            function formatOffset(seconds) {
++                const sign = seconds < 0 ? "-" : "+"
++                const total = Math.round(Math.abs(seconds))
++                const h = Math.floor(total / 3600)
++                const m = Math.floor((total % 3600) / 60)
++                const sec = total % 60
++                const ss = (sec < 10 ? "0" : "") + sec
++                if (h > 0)
++                    return sign + h + ":" + (m < 10 ? "0" : "") + m + ":" + ss
++                return sign + m + ":" + ss
++            }
++
++            function canScrub() {
++                return Player.seekable && Player.length.valid() && Player.length.toSeconds() > 0
++            }
++
++            function hideBubble() {
++                if (seekBubble)
++                    seekBubble.visible = false
++            }
++
++            function updateScrub(dx) {
++                if (!canScrub()) {
++                    // Media ended or changed mid-drag: stop scrubbing.
++                    hideBubble()
++                    dragMode = 2
++                    return
++                }
++                const lengthSeconds = Player.length.toSeconds()
++                const offset = scrubOffsetSeconds(dx)
++                scrubTargetPosition = Math.max(0, Math.min(1, scrubStartPosition + offset / lengthSeconds))
++                if (seekBubble) {
++                    seekBubble.timeText = Player.length.scale(scrubTargetPosition).formatHMS(0)
++                    seekBubble.offsetText = formatOffset((scrubTargetPosition - scrubStartPosition) * lengthSeconds)
++                }
++            }
++
+             // We synthesize wheel event with pixel delta. It is a to-do to handle
+             // touch properly with precision adjustment, like on Android:
+             onActiveTranslationChanged: {
+-                if (active) {
+-                    console.assert(wheelToVLCConverter)
++                if (!active)
++                    return
++
++                if (dragMode === 0) {
++                    if (Math.abs(activeTranslation.x) > Math.abs(activeTranslation.y) && canScrub()) {
++                        dragMode = 1
++                        scrubStartPosition = Player.position
++                        scrubTargetPosition = scrubStartPosition
++                        if (seekBubble)
++                            seekBubble.visible = true
++                    } else {
++                        dragMode = 2
++                    }
++                }
+ 
+-                    const delta = Qt.point(activeTranslation.x - lastActiveTranslation.x,
+-                                           activeTranslation.y - lastActiveTranslation.y)
++                if (dragMode === 1) {
++                    updateScrub(activeTranslation.x)
++                    return
++                }
+ 
+-                    // WheelToVLCConverter can not handle sole pixel delta now, so we also
+-                    // use angle delta. This is similar to wheel events on some platforms:
+-                    wheelToVLCConverter.customWheelEvent(delta,
+-                                                         delta,
+-                                                         Qt.NoButton,
+-                                                         Qt.NoModifier,
+-                                                         true)
++                console.assert(wheelToVLCConverter)
+ 
+-                    lastActiveTranslation = activeTranslation
+-                }
++                const delta = Qt.point(activeTranslation.x - lastActiveTranslation.x,
++                                       activeTranslation.y - lastActiveTranslation.y)
++
++                // WheelToVLCConverter can not handle sole pixel delta now, so we also
++                // use angle delta. This is similar to wheel events on some platforms:
++                wheelToVLCConverter.customWheelEvent(delta,
++                                                     delta,
++                                                     Qt.NoButton,
++                                                     Qt.NoModifier,
++                                                     true)
++
++                lastActiveTranslation = activeTranslation
++            }
++
++            // Runs after the release; skipped when the drag was canceled
++            // (Qt deactivates the handler before emitting canceled()).
++            function finishScrub(targetPosition, startPosition) {
++                if (scrubCanceled || !canScrub())
++                    return
++                // Only seek if the drag moved the target by at least a second:
++                if (Math.abs(targetPosition - startPosition) * Player.length.toSeconds() >= 1)
++                    Player.jumpToPos(targetPosition)
+             }
+ 
+             onActiveChanged: {
+                 if (active) {
++                    dragMode = 0
++                    scrubCanceled = false
+                     if (!wheelToVLCConverter) {
+                         wheelToVLCConverter = wheelToVLCConverterComponent.createObject(touchDragHandler)
+                         wheelToVLCConverter.vlcWheelKey.connect(MainCtx, MainCtx.sendVLCHotkey)
+                     }
+                 } else {
++                    if (dragMode === 1) {
++                        hideBubble()
++                        Qt.callLater(finishScrub, scrubTargetPosition, scrubStartPosition)
++                    }
++                    dragMode = 0
+                     lastActiveTranslation = Qt.vector2d(0, 0)
+                 }
+             }
++
++            onCanceled: {
++                scrubCanceled = true
++                hideBubble()
++                dragMode = 0
++                lastActiveTranslation = Qt.vector2d(0, 0)
++            }
++
++            Component.onDestruction: {
++                if (dragMode === 1)
++                    hideBubble()
++            }
+         }
+ 
+         Component {
+@@ -299,7 +404,7 @@ FocusScope {
+                     }
+ 
+                     TouchDragHandler {
+-
++                        seekBubble: touchSeekBubble
+                     }
+                 }
+ 
+@@ -475,6 +580,7 @@ FocusScope {
+ 
+                     TouchDragHandler {
+                         wheelToVLCConverter: wheelToVlc
++                        seekBubble: touchSeekBubble
+                     }
+ 
+                     WheelToVLCConverter {
+@@ -1347,6 +1453,46 @@ FocusScope {
+         }
+     }
+ 
++    // Shown while a sideways touch drag scrubs through the media (see TouchDragHandler):
++    Rectangle {
++        id: touchSeekBubble
++
++        property string timeText: ""
++        property string offsetText: ""
++
++        visible: false
++        z: 100
++
++        anchors.centerIn: parent
++
++        width: seekBubbleColumn.implicitWidth + VLCStyle.margin_large * 2
++        height: seekBubbleColumn.implicitHeight + VLCStyle.margin_normal * 2
++        radius: VLCStyle.margin_normal
++
++        color: Qt.rgba(0, 0, 0, 0.7)
++
++        Column {
++            id: seekBubbleColumn
++
++            anchors.centerIn: parent
++
++            Text {
++                anchors.horizontalCenter: parent.horizontalCenter
++                text: touchSeekBubble.timeText
++                color: "white"
++                font.pixelSize: VLCStyle.fontSize_xxlarge
++                font.bold: true
++            }
++
++            Text {
++                anchors.horizontalCenter: parent.horizontalCenter
++                text: touchSeekBubble.offsetText
++                color: "white"
++                font.pixelSize: VLCStyle.fontSize_large
++            }
++        }
++    }
++
+     QmlAudioContextMenu {
+         id: audioContextMenu
+ 
