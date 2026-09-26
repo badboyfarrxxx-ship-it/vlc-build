@@ -1,30 +1,59 @@
 diff --git a/modules/gui/qt/player/qml/Player.qml b/modules/gui/qt/player/qml/Player.qml
-index 46691e7..64ae1d3 100644
+index 46691e7..b2c0288 100644
 --- a/modules/gui/qt/player/qml/Player.qml
 +++ b/modules/gui/qt/player/qml/Player.qml
-@@ -216,37 +216,142 @@ FocusScope {
+@@ -216,37 +216,191 @@ FocusScope {
  
              property WheelToVLCConverter wheelToVLCConverter
  
-+            // Sideways drags scrub through the media (seek on release, with a
-+            // time bubble while dragging); up/down drags keep the wheel behavior.
++            // Sideways drags scrub through the media live (the picture follows the
++            // finger, with a time bubble); up/down drags keep the wheel behavior.
 +            property Item seekBubble: null
 +
-+            // 0: axis not decided yet, 1: horizontal (scrub), 2: vertical (wheel)
++            // 0: axis not decided yet, 1: horizontal (scrub), 2: vertical (wheel),
++            // 3: scrub stopped mid-drag (ignore the rest of this drag)
 +            property int dragMode: 0
 +
-+            // Seconds covered by a drag across the full width of the handler's item.
-+            property real fullSwipeSeconds: 300
++            // How much media time one full-width drag covers, from a slow drag to
++            // a fast flick. Finger speed is measured in widths per second.
++            property real slowSecondsPerWidth: 30
++            property real fastSecondsPerWidth: 600
++            property real fastWidthsPerSecond: 2
++
++            // Minimum time between live seeks while dragging.
++            property int liveSeekIntervalMs: 100
 +
 +            property real scrubStartPosition: 0
 +            property real scrubTargetPosition: 0
++            property real scrubOffsetSeconds: 0
++            property real lastScrubX: 0
++            property double lastSeekTime: 0
++            property real lastSeekPosition: -1
 +            property bool scrubCanceled: false
 +
-+            function scrubOffsetSeconds(dx) {
++            // Seconds of media for a finger movement of dx pixels: the faster the
++            // finger (Qt's smoothed velocity, px/s), the more time each pixel covers.
++            function scrubStepSeconds(dx) {
 +                const w = Math.max(1, touchDragHandler.parent ? touchDragHandler.parent.width : 1)
-+                const f = Math.min(1, Math.abs(dx) / w)
-+                // Quadratic curve: short drags make fine moves, long drags cover a lot.
-+                return Math.sign(dx) * fullSwipeSeconds * f * f
++                const speed = Math.abs(centroid.velocity.x) / w
++                const t = Math.min(1, speed / fastWidthsPerSecond)
++                return (dx / w) * (slowSecondsPerWidth + (fastSecondsPerWidth - slowSecondsPerWidth) * t)
++            }
++
++            // Applies a live seek the throttle held back, so the picture catches up
++            // with the bubble when the finger pauses.
++            property Timer pendingSeekTimer: Timer {
++                interval: touchDragHandler.liveSeekIntervalMs
++                repeat: false
++                onTriggered: touchDragHandler.seekIfPending()
++            }
++
++            function seekIfPending() {
++                if (dragMode !== 1 || scrubTargetPosition === lastSeekPosition)
++                    return
++                Player.jumpToPos(scrubTargetPosition)
++                lastSeekTime = Date.now()
++                lastSeekPosition = scrubTargetPosition
 +            }
 +
 +            function formatOffset(seconds) {
@@ -48,16 +77,27 @@ index 46691e7..64ae1d3 100644
 +                    seekBubble.visible = false
 +            }
 +
-+            function updateScrub(dx) {
++            function updateScrub(x) {
 +                if (!canScrub()) {
-+                    // Media ended or changed mid-drag: stop scrubbing.
++                    // Media ended or changed mid-drag: stop scrubbing, ignore the rest.
 +                    hideBubble()
-+                    dragMode = 2
++                    dragMode = 3
 +                    return
 +                }
 +                const lengthSeconds = Player.length.toSeconds()
-+                const offset = scrubOffsetSeconds(dx)
-+                scrubTargetPosition = Math.max(0, Math.min(1, scrubStartPosition + offset / lengthSeconds))
++                const now = Date.now()
++                scrubOffsetSeconds += scrubStepSeconds(x - lastScrubX)
++                lastScrubX = x
++                // Stop just short of the end, where a seek would end playback:
++                const maxPosition = Math.max(0, 1 - 1 / lengthSeconds)
++                // Keep the offset inside the media so dragging back responds at once:
++                scrubOffsetSeconds = Math.max(-scrubStartPosition * lengthSeconds,
++                                              Math.min((maxPosition - scrubStartPosition) * lengthSeconds, scrubOffsetSeconds))
++                scrubTargetPosition = Math.max(0, Math.min(maxPosition, scrubStartPosition + scrubOffsetSeconds / lengthSeconds))
++                if (now - lastSeekTime >= liveSeekIntervalMs)
++                    seekIfPending()
++                else
++                    pendingSeekTimer.restart()
 +                if (seekBubble) {
 +                    seekBubble.timeText = Player.length.scale(scrubTargetPosition).formatHMS(0)
 +                    seekBubble.offsetText = formatOffset((scrubTargetPosition - scrubStartPosition) * lengthSeconds)
@@ -77,19 +117,26 @@ index 46691e7..64ae1d3 100644
 +                        dragMode = 1
 +                        scrubStartPosition = Player.position
 +                        scrubTargetPosition = scrubStartPosition
++                        scrubOffsetSeconds = 0
++                        lastScrubX = activeTranslation.x
++                        lastSeekTime = 0
++                        lastSeekPosition = scrubStartPosition
 +                        if (seekBubble)
 +                            seekBubble.visible = true
 +                    } else {
 +                        dragMode = 2
 +                    }
 +                }
- 
--                    const delta = Qt.point(activeTranslation.x - lastActiveTranslation.x,
--                                           activeTranslation.y - lastActiveTranslation.y)
++
 +                if (dragMode === 1) {
 +                    updateScrub(activeTranslation.x)
 +                    return
 +                }
+ 
+-                    const delta = Qt.point(activeTranslation.x - lastActiveTranslation.x,
+-                                           activeTranslation.y - lastActiveTranslation.y)
++                if (dragMode === 3)
++                    return
  
 -                    // WheelToVLCConverter can not handle sole pixel delta now, so we also
 -                    // use angle delta. This is similar to wheel events on some platforms:
@@ -116,13 +163,13 @@ index 46691e7..64ae1d3 100644
 +                lastActiveTranslation = activeTranslation
 +            }
 +
-+            // Runs after the release; skipped when the drag was canceled
-+            // (Qt deactivates the handler before emitting canceled()).
-+            function finishScrub(targetPosition, startPosition) {
++            // Runs after the release: lands exactly on the last target if the throttled
++            // live seeks skipped it. Skipped when the drag was canceled (Qt deactivates
++            // the handler before emitting canceled()); the video stays where it is.
++            function finishScrub(targetPosition, lastSeeked) {
 +                if (scrubCanceled || !canScrub())
 +                    return
-+                // Only seek if the drag moved the target by at least a second:
-+                if (Math.abs(targetPosition - startPosition) * Player.length.toSeconds() >= 1)
++                if (targetPosition !== lastSeeked)
 +                    Player.jumpToPos(targetPosition)
              }
  
@@ -136,8 +183,9 @@ index 46691e7..64ae1d3 100644
                      }
                  } else {
 +                    if (dragMode === 1) {
++                        pendingSeekTimer.stop()
 +                        hideBubble()
-+                        Qt.callLater(finishScrub, scrubTargetPosition, scrubStartPosition)
++                        Qt.callLater(finishScrub, scrubTargetPosition, lastSeekPosition)
 +                    }
 +                    dragMode = 0
                      lastActiveTranslation = Qt.vector2d(0, 0)
@@ -145,6 +193,7 @@ index 46691e7..64ae1d3 100644
              }
 +
 +            onCanceled: {
++                pendingSeekTimer.stop()
 +                scrubCanceled = true
 +                hideBubble()
 +                dragMode = 0
@@ -158,7 +207,7 @@ index 46691e7..64ae1d3 100644
          }
  
          Component {
-@@ -299,7 +404,7 @@ FocusScope {
+@@ -299,7 +453,7 @@ FocusScope {
                      }
  
                      TouchDragHandler {
@@ -167,7 +216,7 @@ index 46691e7..64ae1d3 100644
                      }
                  }
  
-@@ -475,6 +580,7 @@ FocusScope {
+@@ -475,6 +629,7 @@ FocusScope {
  
                      TouchDragHandler {
                          wheelToVLCConverter: wheelToVlc
@@ -175,7 +224,7 @@ index 46691e7..64ae1d3 100644
                      }
  
                      WheelToVLCConverter {
-@@ -1347,6 +1453,46 @@ FocusScope {
+@@ -1347,6 +1502,46 @@ FocusScope {
          }
      }
  
