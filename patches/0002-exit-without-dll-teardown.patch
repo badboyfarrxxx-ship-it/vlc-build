@@ -1,0 +1,17 @@
+diff --git a/bin/winvlc.c b/bin/winvlc.c
+index 14cc8de..08cb01b 100644
+--- a/bin/winvlc.c
++++ b/bin/winvlc.c
+@@ -241,5 +241,12 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
+         free (argv[i]);
+ 
+     (void)hInstance; (void)hPrevInstance; (void)lpCmdLine; (void)nCmdShow;
++
++    /* libvlc is fully shut down and settings are saved. Skip the DLL unload
++     * step: static destructors in the Qt plugin can wait forever on threads
++     * that ExitProcess has already killed, leaving vlc.exe stuck with no
++     * window. */
++    fflush(NULL);
++    TerminateProcess(GetCurrentProcess(), 0);
+     return 0;
+ }
